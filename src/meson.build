@@ -15,12 +15,14 @@ watchdog_deps = [
   dependency('stdplus'),
 ]
 
+pdkhook_deps = [ declare_dependency (link_args: '-lpdkhook'),]
+
 watchdog_lib = static_library(
   'watchdog',
   'watchdog.cpp',
   implicit_include_directories: false,
   include_directories: watchdog_headers,
-  dependencies: watchdog_deps)
+  dependencies: [watchdog_deps, pdkhook_deps],)
 
 watchdog_dep = declare_dependency(
   dependencies: watchdog_deps,
