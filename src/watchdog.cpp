@@ -1,9 +1,12 @@
 #include "watchdog.hpp"
 
+#include <systemd/sd-journal.h>
+
 #include <phosphor-logging/elog.hpp>
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/exception.hpp>
 #include <xyz/openbmc_project/Common/error.hpp>
+#include <xyz/openbmc_project/State/Host/server.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -19,10 +22,86 @@ using namespace phosphor::logging;
 
 using sdbusplus::xyz::openbmc_project::Common::Error::InternalFailure;
 
-// systemd service to kick start a target.
-constexpr auto SYSTEMD_SERVICE = "org.freedesktop.systemd1";
-constexpr auto SYSTEMD_ROOT = "/org/freedesktop/systemd1";
-constexpr auto SYSTEMD_INTERFACE = "org.freedesktop.systemd1.Manager";
+const static constexpr char* currentHostState = "CurrentHostState";
+const static constexpr char* hostStatusOff =
+    "xyz.openbmc_project.State.Host.HostState.Off";
+
+const static constexpr char* actionDescription = " due to Watchdog timeout";
+const static constexpr char* hardResetDescription = "Hard Reset - System reset";
+const static constexpr char* powerOffDescription =
+    "Power Down - System power down";
+const static constexpr char* powerCycleDescription =
+    "Power Cycle - System power cycle";
+const static constexpr char* timerExpiredDescription = "Timer expired";
+
+const static constexpr char* preInterruptActionNone =
+    "xyz.openbmc_project.State.Watchdog.PreTimeoutInterruptAction.None";
+
+const static constexpr char* preInterruptDescriptionSMI = "SMI";
+const static constexpr char* preInterruptDescriptionNMI = "NMI";
+const static constexpr char* preInterruptDescriptionMI = "Messaging Interrupt";
+
+const static constexpr char* reservedDescription = "Reserved";
+
+const static constexpr char* timerUseDescriptionBIOSFRB2 = "BIOS FRB2";
+const static constexpr char* timerUseDescriptionBIOSPOST = "BIOS/POST";
+const static constexpr char* timerUseDescriptionOSLoad = "OSLoad";
+const static constexpr char* timerUseDescriptionSMSOS = "SMS/OS";
+const static constexpr char* timerUseDescriptionOEM = "OEM";
+
+namespace restart
+{
+static constexpr const char* busName =
+    "xyz.openbmc_project.Control.Host.RestartCause";
+static constexpr const char* path =
+    "/xyz/openbmc_project/control/host0/restart_cause";
+static constexpr const char* interface =
+    "xyz.openbmc_project.Control.Host.RestartCause";
+static constexpr const char* property = "RequestedRestartCause";
+} // namespace restart
+
+// chassis state manager service
+namespace chassis
+{
+static constexpr const char* busName = "xyz.openbmc_project.State.Chassis";
+static constexpr const char* path = "/xyz/openbmc_project/state/chassis0";
+static constexpr const char* interface = "xyz.openbmc_project.State.Chassis";
+static constexpr const char* request = "RequestedPowerTransition";
+} // namespace chassis
+
+namespace host
+{
+static constexpr const char* busName = "xyz.openbmc_project.State.Host";
+static constexpr const char* path = "/xyz/openbmc_project/state/host0";
+static constexpr const char* interface = "xyz.openbmc_project.State.Host";
+static constexpr const char* request = "RequestedHostTransition";
+} // namespace host
+
+namespace nmi
+{
+static constexpr const char* busName = "xyz.openbmc_project.Control.Host.NMI";
+static constexpr const char* path = "/xyz/openbmc_project/control/host0/nmi";
+static constexpr const char* interface = "xyz.openbmc_project.Control.Host.NMI";
+static constexpr const char* request = "NMI";
+
+} // namespace nmi
+
+void Watchdog::powerStateChangedHandler(
+    const std::map<std::string, std::variant<std::string>>& props)
+{
+    const auto iter = props.find(currentHostState);
+    if (iter != props.end())
+    {
+        const std::string* powerState = std::get_if<std::string>(&iter->second);
+        if (powerState && (*powerState == hostStatusOff))
+        {
+            if (timerEnabled())
+            {
+                enabled(false);
+            }
+        }
+    }
+}
 
 void Watchdog::resetTimeRemaining(bool enableWatchdog)
 {
@@ -108,13 +187,111 @@ uint64_t Watchdog::interval(uint64_t value)
 // Optional callback function on timer expiration
 void Watchdog::timeOutHandler()
 {
+    PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
+    std::string preInterruptActionMessageArgs{};
+
     Action action = expireAction();
+    std::string actionMessageArgs{};
+
+    expiredTimerUse(currentTimerUse());
+
+    TimerUse timeUser = expiredTimerUse();
+    std::string timeUserMessage{};
+
     if (!this->enabled())
     {
         action = fallback->action;
     }
 
-    expiredTimerUse(currentTimerUse());
+    switch (timeUser)
+    {
+        case Watchdog::TimerUse::BIOSFRB2:
+            timeUserMessage = timerUseDescriptionBIOSFRB2;
+            break;
+        case Watchdog::TimerUse::BIOSPOST:
+            timeUserMessage = timerUseDescriptionBIOSPOST;
+            break;
+        case Watchdog::TimerUse::OSLoad:
+            timeUserMessage = timerUseDescriptionOSLoad;
+            break;
+        case Watchdog::TimerUse::SMSOS:
+            timeUserMessage = timerUseDescriptionSMSOS;
+            break;
+        case Watchdog::TimerUse::OEM:
+            timeUserMessage = timerUseDescriptionOEM;
+            break;
+        default:
+            timeUserMessage = reservedDescription;
+            break;
+    }
+
+    switch (action)
+    {
+        case Watchdog::Action::HardReset:
+            actionMessageArgs = std::string(hardResetDescription) +
+                                std::string(actionDescription);
+            break;
+        case Watchdog::Action::PowerOff:
+            actionMessageArgs = std::string(powerOffDescription) +
+                                std::string(actionDescription);
+            break;
+        case Watchdog::Action::PowerCycle:
+            actionMessageArgs = std::string(powerCycleDescription) +
+                                std::string(actionDescription);
+            break;
+        case Watchdog::Action::None:
+            actionMessageArgs = timerExpiredDescription;
+            break;
+        default:
+            actionMessageArgs = reservedDescription;
+            break;
+    }
+
+    // Log into redfish event log
+    sd_journal_send("MESSAGE=IPMIWatchdog: Timed out ACTION=%s",
+                    convertForMessage(action).c_str(), "PRIORITY=%i", LOG_INFO,
+                    "REDFISH_MESSAGE_ID=%s", "OpenBMC.0.1.IPMIWatchdog",
+                    "REDFISH_MESSAGE_ARGS=%s. timer use: %s",
+                    actionMessageArgs.c_str(), timeUserMessage.c_str(), NULL);
+
+    switch (preTimeoutInterruptAction)
+    {
+        case Watchdog::PreTimeoutInterruptAction::SMI:
+            preInterruptActionMessageArgs = preInterruptDescriptionSMI;
+            break;
+        case Watchdog::PreTimeoutInterruptAction::NMI:
+            preInterruptActionMessageArgs = preInterruptDescriptionNMI;
+            break;
+        case Watchdog::PreTimeoutInterruptAction::MI:
+            preInterruptActionMessageArgs = preInterruptDescriptionMI;
+            break;
+        default:
+            preInterruptActionMessageArgs = reservedDescription;
+            break;
+    }
+
+    if (preInterruptActionNone != convertForMessage(preTimeoutInterruptAction))
+    {
+        preTimeoutInterruptOccurFlag(true);
+
+        sd_journal_send("MESSAGE=IPMIWatchdog: Pre Timed out Interrupt=%s",
+                        convertForMessage(preTimeoutInterruptAction).c_str(),
+                        "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
+                        "OpenBMC.0.1.IPMIWatchdog",
+                        "REDFISH_MESSAGE_ARGS=Timer interrupt - %s due to "
+                        "Watchdog timeout. timer use: %s",
+                        preInterruptActionMessageArgs.c_str(),
+                        timeUserMessage.c_str(), NULL);
+
+        if (preTimeoutInterruptAction ==
+            Watchdog::PreTimeoutInterruptAction::NMI)
+        {
+            sdbusplus::message::message preTimeoutInterruptHandler;
+            preTimeoutInterruptHandler = bus.new_method_call(
+                nmi::busName, nmi::path, nmi::interface, nmi::request);
+            bus.call_noreply(preTimeoutInterruptHandler);
+        }
+    }
 
     auto target = actionTargetMap.find(action);
     if (target == actionTargetMap.end())
@@ -134,12 +311,45 @@ void Watchdog::timeOutHandler()
 
         try
         {
-            auto method = bus.new_method_call(SYSTEMD_SERVICE, SYSTEMD_ROOT,
-                                              SYSTEMD_INTERFACE, "StartUnit");
-            method.append(target->second);
-            method.append("replace");
+            sdbusplus::message::message method;
+            if (action == Watchdog::Action::HardReset)
+            {
+                auto method = bus.new_method_call(
+                    restart::busName, restart::path,
+                    "org.freedesktop.DBus.Properties", "Set");
+                method.append(
+                    restart::interface, restart::property,
+                    std::variant<std::string>("xyz.openbmc_project.State.Host."
+                                              "RestartCause.WatchdogTimer"));
+                bus.call_noreply(method);
 
-            bus.call_noreply(method);
+                method = bus.new_method_call(host::busName, host::path,
+                                             "org.freedesktop.DBus.Properties",
+                                             "Set");
+                method.append(host::interface, host::request,
+                              std::variant<std::string>(target->second));
+                bus.call_noreply(method);
+            }
+            else
+            {
+                if (action == Watchdog::Action::PowerCycle)
+                {
+                    auto method = bus.new_method_call(
+                        restart::busName, restart::path,
+                        "org.freedesktop.DBus.Properties", "Set");
+                    method.append(restart::interface, restart::property,
+                                  std::variant<std::string>(
+                                      "xyz.openbmc_project.State.Host."
+                                      "RestartCause.WatchdogTimer"));
+                    bus.call_noreply(method);
+                }
+                method = bus.new_method_call(chassis::busName, chassis::path,
+                                             "org.freedesktop.DBus.Properties",
+                                             "Set");
+                method.append(chassis::interface, chassis::request,
+                              std::variant<std::string>(target->second));
+                bus.call_noreply(method);
+            }
         }
         catch (const sdbusplus::exception_t& e)
         {

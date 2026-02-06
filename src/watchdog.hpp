@@ -75,7 +75,18 @@ class Watchdog : public WatchdogInherits
         actionTargetMap(std::move(actionTargetMap)), fallback(fallback),
         minInterval(minInterval),
         timer(event, std::bind(&Watchdog::timeOutHandler, this)),
-        objPath(objPath), exitAfterTimeout(exitAfterTimeout)
+        objPath(objPath), exitAfterTimeout(exitAfterTimeout),
+        powerStateChangedSignal(
+            bus,
+            sdbusplus::bus::match::rules::propertiesChanged(
+                "/xyz/openbmc_project/state/host0",
+                "xyz.openbmc_project.State.Host"),
+            [this](sdbusplus::message::message& msg) {
+                std::string objectName;
+                std::map<std::string, std::variant<std::string>> props;
+                msg.read(objectName, props);
+                powerStateChangedHandler(props);
+            })
     {
         // Use default if passed in otherwise just use default that comes
         // with object
@@ -91,6 +102,12 @@ class Watchdog : public WatchdogInherits
         // enters the fallback state if the fallback is always enabled.
         tryFallbackOrDisable();
     }
+
+    /** @brief Disable watchdog when power status change meet
+     *         the specific requirement
+     */
+    void powerStateChangedHandler(
+        const std::map<std::string, std::variant<std::string>>& props);
 
     /** @brief Resets the TimeRemaining to the configured Interval
      *         Optionally enables the watchdog.
@@ -191,6 +208,9 @@ class Watchdog : public WatchdogInherits
 
     /** @brief Do we terminate after exit */
     bool exitAfterTimeout;
+
+    /** @brief Match for power state changed signal */
+    sdbusplus::bus::match_t powerStateChangedSignal;
 };
 
 } // namespace watchdog
