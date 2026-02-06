@@ -332,7 +332,8 @@ void Watchdog::timeOutHandler()
             }
             else
             {
-                if (action == Watchdog::Action::PowerCycle)
+                if ((action == Watchdog::Action::PowerCycle) ||
+                    (action == Watchdog::Action::PowerOff))
                 {
                     auto method = bus.new_method_call(
                         restart::busName, restart::path,
