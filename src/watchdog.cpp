@@ -10,7 +10,9 @@
 #include <xyz/openbmc_project/State/Host/server.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <string>
 #include <string_view>
 
 namespace phosphor
@@ -52,10 +54,11 @@ const static constexpr char* timerUseDescriptionOEM = "OEM";
 
 namespace restart
 {
-static constexpr const char* busName =
+static constexpr const char* busNameBase =
     "xyz.openbmc_project.Control.Host.RestartCause";
-static constexpr const char* path =
-    "/xyz/openbmc_project/control/host0/restart_cause";
+static constexpr const char* pathPrefix =
+    "/xyz/openbmc_project/control/host";
+static constexpr const char* pathSuffix = "/restart_cause";
 static constexpr const char* interface =
     "xyz.openbmc_project.Control.Host.RestartCause";
 static constexpr const char* property = "RequestedRestartCause";
@@ -64,28 +67,99 @@ static constexpr const char* property = "RequestedRestartCause";
 // chassis state manager service
 namespace chassis
 {
-static constexpr const char* busName = "xyz.openbmc_project.State.Chassis";
-static constexpr const char* path = "/xyz/openbmc_project/state/chassis0";
+static constexpr const char* busNameBase = "xyz.openbmc_project.State.Chassis";
+static constexpr const char* pathPrefix = "/xyz/openbmc_project/state/chassis";
+static constexpr const char* pathSuffix = "";
 static constexpr const char* interface = "xyz.openbmc_project.State.Chassis";
 static constexpr const char* request = "RequestedPowerTransition";
 } // namespace chassis
 
 namespace host
 {
-static constexpr const char* busName = "xyz.openbmc_project.State.Host";
-static constexpr const char* path = "/xyz/openbmc_project/state/host0";
+static constexpr const char* busNameBase = "xyz.openbmc_project.State.Host";
+static constexpr const char* pathPrefix = "/xyz/openbmc_project/state/host";
+static constexpr const char* pathSuffix = "";
 static constexpr const char* interface = "xyz.openbmc_project.State.Host";
 static constexpr const char* request = "RequestedHostTransition";
 } // namespace host
 
 namespace nmi
 {
-static constexpr const char* busName = "xyz.openbmc_project.Control.Host.NMI";
-static constexpr const char* path = "/xyz/openbmc_project/control/host0/nmi";
+static constexpr const char* busNameBase =
+    "xyz.openbmc_project.Control.Host.NMI";
+static constexpr const char* pathPrefix = "/xyz/openbmc_project/control/host";
+static constexpr const char* pathSuffix = "/nmi";
 static constexpr const char* interface = "xyz.openbmc_project.Control.Host.NMI";
 static constexpr const char* request = "NMI";
 
 } // namespace nmi
+
+namespace
+{
+
+unsigned int parseHostInstance(std::string_view hostToken)
+{
+    if (hostToken.empty())
+    {
+        return 0;
+    }
+
+    std::string token(hostToken);
+    std::transform(token.begin(), token.end(), token.begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+
+    static constexpr std::string_view hostPrefix = "host";
+    if (token.rfind(hostPrefix, 0) != 0)
+    {
+        return 0;
+    }
+
+    std::string_view suffix(token.data() + hostPrefix.size(),
+                            token.size() - hostPrefix.size());
+    if (suffix.empty())
+    {
+        return 0;
+    }
+
+    if (!std::all_of(suffix.begin(), suffix.end(),
+                     [](unsigned char c) { return std::isdigit(c) != 0; }))
+    {
+        return 0;
+    }
+
+    return static_cast<unsigned int>(std::stoul(std::string(suffix)));
+}
+
+unsigned int getInstanceFromObjectPath(std::string_view objectPath)
+{
+    const auto lastSlash = objectPath.find_last_of('/');
+    const std::string_view token =
+        (lastSlash == std::string_view::npos)
+            ? objectPath
+            : objectPath.substr(lastSlash + 1);
+    return parseHostInstance(token);
+}
+
+std::string buildBusName(std::string_view busNameBase, unsigned int instance)
+{
+    if (instance == 0)
+    {
+        return std::string(busNameBase);
+    }
+
+    return std::string(busNameBase) + std::to_string(instance);
+}
+
+std::string buildPath(std::string_view pathPrefix, unsigned int instance,
+                      std::string_view pathSuffix)
+{
+    return std::string(pathPrefix) + std::to_string(instance) +
+           std::string(pathSuffix);
+}
+
+} // namespace
 
 void Watchdog::powerStateChangedHandler(
     const std::map<std::string, std::variant<std::string>>& props)
@@ -188,6 +262,18 @@ uint64_t Watchdog::interval(uint64_t value)
 // Optional callback function on timer expiration
 void Watchdog::timeOutHandler()
 {
+    const unsigned int instance = getInstanceFromObjectPath(objPath);
+    const auto restartBusName = buildBusName(restart::busNameBase, instance);
+    const auto restartPath =
+        buildPath(restart::pathPrefix, instance, restart::pathSuffix);
+    const auto chassisBusName = buildBusName(chassis::busNameBase, instance);
+    const auto chassisPath =
+        buildPath(chassis::pathPrefix, instance, chassis::pathSuffix);
+    const auto hostBusName = buildBusName(host::busNameBase, instance);
+    const auto hostPath = buildPath(host::pathPrefix, instance, host::pathSuffix);
+    const auto nmiBusName = buildBusName(nmi::busNameBase, instance);
+    const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
+
     PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
     std::string preInterruptActionMessageArgs{};
 
@@ -289,7 +375,8 @@ void Watchdog::timeOutHandler()
         {
             sdbusplus::message::message preTimeoutInterruptHandler;
             preTimeoutInterruptHandler = bus.new_method_call(
-                nmi::busName, nmi::path, nmi::interface, nmi::request);
+                nmiBusName.c_str(), nmiPath.c_str(), nmi::interface,
+                nmi::request);
             bus.call_noreply(preTimeoutInterruptHandler);
         }
     }
@@ -317,7 +404,7 @@ void Watchdog::timeOutHandler()
             if (action == Watchdog::Action::HardReset)
             {
                 auto method = bus.new_method_call(
-                    restart::busName, restart::path,
+                    restartBusName.c_str(), restartPath.c_str(),
                     "org.freedesktop.DBus.Properties", "Set");
                 method.append(
                     restart::interface, restart::property,
@@ -325,7 +412,8 @@ void Watchdog::timeOutHandler()
                                               "RestartCause.WatchdogTimer"));
                 bus.call_noreply(method);
 
-                method = bus.new_method_call(host::busName, host::path,
+                method = bus.new_method_call(hostBusName.c_str(),
+                                             hostPath.c_str(),
                                              "org.freedesktop.DBus.Properties",
                                              "Set");
                 method.append(host::interface, host::request,
@@ -338,7 +426,7 @@ void Watchdog::timeOutHandler()
                     (action == Watchdog::Action::PowerOff))
                 {
                     auto method = bus.new_method_call(
-                        restart::busName, restart::path,
+                        restartBusName.c_str(), restartPath.c_str(),
                         "org.freedesktop.DBus.Properties", "Set");
                     method.append(restart::interface, restart::property,
                                   std::variant<std::string>(
@@ -346,7 +434,8 @@ void Watchdog::timeOutHandler()
                                       "RestartCause.WatchdogTimer"));
                     bus.call_noreply(method);
                 }
-                method = bus.new_method_call(chassis::busName, chassis::path,
+                method = bus.new_method_call(chassisBusName.c_str(),
+                                             chassisPath.c_str(),
                                              "org.freedesktop.DBus.Properties",
                                              "Set");
                 method.append(chassis::interface, chassis::request,

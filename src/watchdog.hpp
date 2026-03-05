@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -79,7 +80,7 @@ class Watchdog : public WatchdogInherits
         powerStateChangedSignal(
             bus,
             sdbusplus::bus::match::rules::propertiesChanged(
-                "/xyz/openbmc_project/state/host0",
+                getHostStatePath(objPath),
                 "xyz.openbmc_project.State.Host"),
             [this](sdbusplus::message::message& msg) {
                 std::string objectName;
@@ -182,6 +183,27 @@ class Watchdog : public WatchdogInherits
     }
 
   private:
+    static std::string getHostStatePath(std::string_view watchdogObjPath)
+    {
+        const auto lastSlash = watchdogObjPath.find_last_of('/');
+        std::string_view token =
+            (lastSlash == std::string_view::npos)
+                ? watchdogObjPath
+                : watchdogObjPath.substr(lastSlash + 1);
+
+        if (token == "host")
+        {
+            token = "host0";
+        }
+
+        if (token.rfind("host", 0) != 0)
+        {
+            token = "host0";
+        }
+
+        return "/xyz/openbmc_project/state/" + std::string(token);
+    }
+
     /** @brief sdbusplus handle */
     sdbusplus::bus_t& bus;
 
