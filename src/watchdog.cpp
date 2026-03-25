@@ -56,8 +56,7 @@ namespace restart
 {
 static constexpr const char* busNameBase =
     "xyz.openbmc_project.Control.Host.RestartCause";
-static constexpr const char* pathPrefix =
-    "/xyz/openbmc_project/control/host";
+static constexpr const char* pathPrefix = "/xyz/openbmc_project/control/host";
 static constexpr const char* pathSuffix = "/restart_cause";
 static constexpr const char* interface =
     "xyz.openbmc_project.Control.Host.RestartCause";
@@ -135,10 +134,9 @@ unsigned int parseHostInstance(std::string_view hostToken)
 unsigned int getInstanceFromObjectPath(std::string_view objectPath)
 {
     const auto lastSlash = objectPath.find_last_of('/');
-    const std::string_view token =
-        (lastSlash == std::string_view::npos)
-            ? objectPath
-            : objectPath.substr(lastSlash + 1);
+    const std::string_view token = (lastSlash == std::string_view::npos)
+                                       ? objectPath
+                                       : objectPath.substr(lastSlash + 1);
     return parseHostInstance(token);
 }
 
@@ -262,6 +260,10 @@ uint64_t Watchdog::interval(uint64_t value)
 // Optional callback function on timer expiration
 void Watchdog::timeOutHandler()
 {
+    if (timerEnabled())
+    {
+        timer.setEnabled(false);
+    }
     const unsigned int instance = getInstanceFromObjectPath(objPath);
     const auto restartBusName = buildBusName(restart::busNameBase, instance);
     const auto restartPath =
@@ -270,7 +272,8 @@ void Watchdog::timeOutHandler()
     const auto chassisPath =
         buildPath(chassis::pathPrefix, instance, chassis::pathSuffix);
     const auto hostBusName = buildBusName(host::busNameBase, instance);
-    const auto hostPath = buildPath(host::pathPrefix, instance, host::pathSuffix);
+    const auto hostPath =
+        buildPath(host::pathPrefix, instance, host::pathSuffix);
     const auto nmiBusName = buildBusName(nmi::busNameBase, instance);
     const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
 
@@ -361,22 +364,22 @@ void Watchdog::timeOutHandler()
     {
         preTimeoutInterruptOccurFlag(true);
 
-        sd_journal_send("MESSAGE=IPMIWatchdog: Pre Timed out Interrupt=%s",
-                        convertForMessage(preTimeoutInterruptAction).c_str(),
-                        "PRIORITY=%i", LOG_INFO, "REDFISH_MESSAGE_ID=%s",
-                        "OpenBMC.0.1.IPMIWatchdog",
-                        "REDFISH_MESSAGE_ARGS=Timer interrupt - %s due to "
-                        "Watchdog timeout. timer use: %s",
-                        preInterruptActionMessageArgs.c_str(),
-                        timeUserMessage.c_str(), NULL);
+        sd_journal_send(
+            "MESSAGE=IPMIWatchdog: Pre Timed out Interrupt=%s",
+            convertForMessage(preTimeoutInterruptAction).c_str(), "PRIORITY=%i",
+            LOG_INFO, "REDFISH_MESSAGE_ID=%s", "OpenBMC.0.1.IPMIWatchdog",
+            "REDFISH_MESSAGE_ARGS=Timer interrupt - %s due to "
+            "Watchdog timeout. timer use: %s",
+            preInterruptActionMessageArgs.c_str(), timeUserMessage.c_str(),
+            NULL);
 
         if (preTimeoutInterruptAction ==
             Watchdog::PreTimeoutInterruptAction::NMI)
         {
             sdbusplus::message::message preTimeoutInterruptHandler;
-            preTimeoutInterruptHandler = bus.new_method_call(
-                nmiBusName.c_str(), nmiPath.c_str(), nmi::interface,
-                nmi::request);
+            preTimeoutInterruptHandler =
+                bus.new_method_call(nmiBusName.c_str(), nmiPath.c_str(),
+                                    nmi::interface, nmi::request);
             bus.call_noreply(preTimeoutInterruptHandler);
         }
     }
@@ -406,16 +409,15 @@ void Watchdog::timeOutHandler()
                 auto method = bus.new_method_call(
                     restartBusName.c_str(), restartPath.c_str(),
                     "org.freedesktop.DBus.Properties", "Set");
-                method.append(
-                    restart::interface, restart::property,
-                    std::variant<std::string>("xyz.openbmc_project.State.Host."
-                                              "RestartCause.WatchdogTimer"));
+                method.append(restart::interface, restart::property,
+                              std::variant<std::string>(
+                                  "xyz.openbmc_project.State.Host."
+                                  "RestartCause.WatchdogTimer"));
                 bus.call_noreply(method);
 
-                method = bus.new_method_call(hostBusName.c_str(),
-                                             hostPath.c_str(),
-                                             "org.freedesktop.DBus.Properties",
-                                             "Set");
+                method = bus.new_method_call(
+                    hostBusName.c_str(), hostPath.c_str(),
+                    "org.freedesktop.DBus.Properties", "Set");
                 method.append(host::interface, host::request,
                               std::variant<std::string>(target->second));
                 bus.call_noreply(method);
@@ -434,10 +436,9 @@ void Watchdog::timeOutHandler()
                                       "RestartCause.WatchdogTimer"));
                     bus.call_noreply(method);
                 }
-                method = bus.new_method_call(chassisBusName.c_str(),
-                                             chassisPath.c_str(),
-                                             "org.freedesktop.DBus.Properties",
-                                             "Set");
+                method = bus.new_method_call(
+                    chassisBusName.c_str(), chassisPath.c_str(),
+                    "org.freedesktop.DBus.Properties", "Set");
                 method.append(chassis::interface, chassis::request,
                               std::variant<std::string>(target->second));
                 bus.call_noreply(method);
