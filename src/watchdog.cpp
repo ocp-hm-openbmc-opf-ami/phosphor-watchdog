@@ -262,6 +262,10 @@ uint64_t Watchdog::interval(uint64_t value)
 // Optional callback function on timer expiration
 void Watchdog::timeOutHandler()
 {
+    if (timerEnabled())
+    {
+        timer.setEnabled(false);
+    }
     const unsigned int instance = getInstanceFromObjectPath(objPath);
     const auto restartBusName = buildBusName(restart::busNameBase, instance);
     const auto restartPath =
