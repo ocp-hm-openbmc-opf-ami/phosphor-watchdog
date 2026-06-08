@@ -56,8 +56,7 @@ namespace restart
 {
 static constexpr const char* busNameBase =
     "xyz.openbmc_project.Control.Host.RestartCause";
-static constexpr const char* pathPrefix =
-    "/xyz/openbmc_project/control/host";
+static constexpr const char* pathPrefix = "/xyz/openbmc_project/control/host";
 static constexpr const char* pathSuffix = "/restart_cause";
 static constexpr const char* interface =
     "xyz.openbmc_project.Control.Host.RestartCause";
@@ -135,10 +134,9 @@ unsigned int parseHostInstance(std::string_view hostToken)
 unsigned int getInstanceFromObjectPath(std::string_view objectPath)
 {
     const auto lastSlash = objectPath.find_last_of('/');
-    const std::string_view token =
-        (lastSlash == std::string_view::npos)
-            ? objectPath
-            : objectPath.substr(lastSlash + 1);
+    const std::string_view token = (lastSlash == std::string_view::npos)
+                                       ? objectPath
+                                       : objectPath.substr(lastSlash + 1);
     return parseHostInstance(token);
 }
 
@@ -207,6 +205,20 @@ bool Watchdog::enabled(bool value)
         timer.restart(milliseconds(interval_ms));
         log<level::INFO>("watchdog: enabled and started",
                          entry("INTERVAL=%llu", interval_ms));
+        // Reset pre-timeout occur flag for fresh watchdog start
+        preTimeoutInterruptOccurFlag(false);
+
+        // Start pre-timeout timer if pre-timeout interval is configured
+        auto preTimeoutMs = preTimeoutInterval() * 1000;
+        if (preTimeoutMs > 0 && preTimeoutMs >= interval_ms)
+        {
+            log<level::ERR>("watchdog: Invalid PreTimeoutInterval >= Interval, "
+                            "pre-timeout will not be scheduled");
+        }
+        else if (preTimeoutMs > 0)
+        {
+            preTimeoutTimer.restart(milliseconds(interval_ms - preTimeoutMs));
+        }
     }
 
     return WatchdogInherits::enabled(value);
@@ -249,6 +261,21 @@ uint64_t Watchdog::timeRemaining(uint64_t value)
     // Update new expiration
     timer.setRemaining(milliseconds(value));
 
+    // Update pre-timeout timer with new remaining time
+    auto preTimeoutMs = preTimeoutInterval() * 1000;
+
+    preTimeoutInterruptOccurFlag(false);
+
+    if (preTimeoutMs > 0 && value > preTimeoutMs)
+    {
+        // restart() internally cancels any pending arm before re-arming
+        preTimeoutTimer.restart(milliseconds(value - preTimeoutMs));
+    }
+    else if (preTimeoutTimer.isEnabled())
+    {
+        preTimeoutTimer.setEnabled(false);
+    }
+
     // Update Base class data.
     return WatchdogInherits::timeRemaining(value);
 }
@@ -266,6 +293,7 @@ void Watchdog::timeOutHandler()
     {
         timer.setEnabled(false);
     }
+
     const unsigned int instance = getInstanceFromObjectPath(objPath);
     const auto restartBusName = buildBusName(restart::busNameBase, instance);
     const auto restartPath =
@@ -274,7 +302,8 @@ void Watchdog::timeOutHandler()
     const auto chassisPath =
         buildPath(chassis::pathPrefix, instance, chassis::pathSuffix);
     const auto hostBusName = buildBusName(host::busNameBase, instance);
-    const auto hostPath = buildPath(host::pathPrefix, instance, host::pathSuffix);
+    const auto hostPath =
+        buildPath(host::pathPrefix, instance, host::pathSuffix);
     const auto nmiBusName = buildBusName(nmi::busNameBase, instance);
     const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
 
@@ -292,6 +321,19 @@ void Watchdog::timeOutHandler()
     if (!this->enabled())
     {
         action = fallback->action;
+    }
+
+    // Stop pre-timeout timer if still running
+    if (preTimeoutTimer.isEnabled())
+    {
+        preTimeoutTimer.setEnabled(false);
+    }
+
+    // Ensures pretimeout action is executed before executing the expire action.
+    auto preTimeoutMs = preTimeoutInterval() * 1000;
+    if (preTimeoutMs > 0 && !preTimeoutInterruptOccurFlag())
+    {
+        preTimeoutHandler();
     }
 
     switch (timeUser)
@@ -345,46 +387,6 @@ void Watchdog::timeOutHandler()
                     "REDFISH_MESSAGE_ARGS=%s. timer use: %s",
                     actionMessageArgs.c_str(), timeUserMessage.c_str(), NULL);
 
-    switch (preTimeoutInterruptAction)
-    {
-        case Watchdog::PreTimeoutInterruptAction::SMI:
-            preInterruptActionMessageArgs = preInterruptDescriptionSMI;
-            break;
-        case Watchdog::PreTimeoutInterruptAction::NMI:
-            preInterruptActionMessageArgs = preInterruptDescriptionNMI;
-            break;
-        case Watchdog::PreTimeoutInterruptAction::MI:
-            preInterruptActionMessageArgs = preInterruptDescriptionMI;
-            break;
-        default:
-            preInterruptActionMessageArgs = reservedDescription;
-            break;
-    }
-
-    if (preInterruptActionNone != convertForMessage(preTimeoutInterruptAction))
-    {
-        preTimeoutInterruptOccurFlag(true);
-
-        sd_journal_send(
-            "MESSAGE=IPMIWatchdog: Pre Timed out Interrupt=%s",
-            convertForMessage(preTimeoutInterruptAction).c_str(), "PRIORITY=%i",
-            LOG_INFO, "REDFISH_MESSAGE_ID=%s", "OpenBMC.0.1.IPMIWatchdog",
-            "REDFISH_MESSAGE_ARGS=Timer interrupt - %s due to "
-            "Watchdog timeout. timer use: %s",
-            preInterruptActionMessageArgs.c_str(), timeUserMessage.c_str(),
-            NULL);
-
-        if (preTimeoutInterruptAction ==
-            Watchdog::PreTimeoutInterruptAction::NMI)
-        {
-            sdbusplus::message::message preTimeoutInterruptHandler;
-            preTimeoutInterruptHandler = bus.new_method_call(
-                nmiBusName.c_str(), nmiPath.c_str(), nmi::interface,
-                nmi::request);
-            bus.call_noreply(preTimeoutInterruptHandler);
-        }
-    }
-
     auto target = actionTargetMap.find(action);
     if (target == actionTargetMap.end())
     {
@@ -415,10 +417,10 @@ void Watchdog::timeOutHandler()
                                   "xyz.openbmc_project.State.Host."
                                   "RestartCause.WatchdogTimer"));
                 bus.call_noreply(method);
-                method = bus.new_method_call(hostBusName.c_str(),
-                                             hostPath.c_str(),
-                                             "org.freedesktop.DBus.Properties",
-                                             "Set");
+
+                method = bus.new_method_call(
+                    hostBusName.c_str(), hostPath.c_str(),
+                    "org.freedesktop.DBus.Properties", "Set");
                 method.append(host::interface, host::request,
                               std::variant<std::string>(target->second));
                 bus.call_noreply(method);
@@ -437,10 +439,9 @@ void Watchdog::timeOutHandler()
                                       "RestartCause.WatchdogTimer"));
                     bus.call_noreply(method);
                 }
-                method = bus.new_method_call(chassisBusName.c_str(),
-                                             chassisPath.c_str(),
-                                             "org.freedesktop.DBus.Properties",
-                                             "Set");
+                method = bus.new_method_call(
+                    chassisBusName.c_str(), chassisPath.c_str(),
+                    "org.freedesktop.DBus.Properties", "Set");
                 method.append(chassis::interface, chassis::request,
                               std::variant<std::string>(target->second));
                 bus.call_noreply(method);
@@ -475,8 +476,83 @@ void Watchdog::timeOutHandler()
     tryFallbackOrDisable();
 }
 
+// Pre-timeout interrupt handler - fires before the main timeout
+void Watchdog::preTimeoutHandler()
+{
+    if (!this->enabled())
+    {
+        if (preTimeoutTimer.isEnabled())
+        {
+            preTimeoutTimer.setEnabled(false);
+        }
+        if (timer.isEnabled())
+        {
+            timer.setEnabled(false);
+        }
+        return;
+    }
+
+    const unsigned int instance = getInstanceFromObjectPath(objPath);
+    const auto nmiBusName = buildBusName(nmi::busNameBase, instance);
+    const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
+
+    PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
+    std::string preInterruptActionMessageArgs{};
+
+    switch (preTimeoutInterruptAction)
+    {
+        case Watchdog::PreTimeoutInterruptAction::SMI:
+            preInterruptActionMessageArgs = preInterruptDescriptionSMI;
+            break;
+        case Watchdog::PreTimeoutInterruptAction::NMI:
+            preInterruptActionMessageArgs = preInterruptDescriptionNMI;
+            break;
+        case Watchdog::PreTimeoutInterruptAction::MI:
+            preInterruptActionMessageArgs = preInterruptDescriptionMI;
+            break;
+        default:
+            preInterruptActionMessageArgs = reservedDescription;
+            break;
+    }
+
+    preTimeoutInterruptOccurFlag(true);
+
+    sd_journal_send(
+        "MESSAGE=IPMIWatchdog: Pre Timed out Interrupt=%s",
+        convertForMessage(preTimeoutInterruptAction).c_str(), "PRIORITY=%i",
+        LOG_INFO, "REDFISH_MESSAGE_ID=%s", "OpenBMC.0.1.IPMIWatchdog",
+        "REDFISH_MESSAGE_ARGS=Timer interrupt - %s due to "
+        "Watchdog timeout. timer use: %s",
+        preInterruptActionMessageArgs.c_str(),
+        convertForMessage(currentTimerUse()).c_str(), NULL);
+
+    if (preTimeoutInterruptAction == Watchdog::PreTimeoutInterruptAction::NMI)
+    {
+        try
+        {
+            auto method =
+                bus.new_method_call(nmiBusName.c_str(), nmiPath.c_str(),
+                                    nmi::interface, nmi::request);
+            bus.call_noreply(method);
+        }
+        catch (const sdbusplus::exception_t& e)
+        {
+            log<level::ERR>("watchdog: Failed to send NMI for pre-timeout",
+                            entry("ERROR=%s", e.what()));
+        }
+    }
+
+    log<level::INFO>("watchdog: pre-timeout interrupt fired");
+}
+
 void Watchdog::tryFallbackOrDisable()
 {
+    // Stop pre-timeout timer on fallback or disable
+    if (preTimeoutTimer.isEnabled())
+    {
+        preTimeoutTimer.setEnabled(false);
+    }
+
     // We only re-arm the watchdog if we were already enabled and have
     // a possible fallback
     if (fallback && (fallback->always || this->enabled()))

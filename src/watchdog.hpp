@@ -76,12 +76,12 @@ class Watchdog : public WatchdogInherits
         actionTargetMap(std::move(actionTargetMap)), fallback(fallback),
         minInterval(minInterval),
         timer(event, std::bind(&Watchdog::timeOutHandler, this)),
+        preTimeoutTimer(event, std::bind(&Watchdog::preTimeoutHandler, this)),
         objPath(objPath), exitAfterTimeout(exitAfterTimeout),
         powerStateChangedSignal(
             bus,
             sdbusplus::bus::match::rules::propertiesChanged(
-                getHostStatePath(objPath),
-                "xyz.openbmc_project.State.Host"),
+                getHostStatePath(objPath), "xyz.openbmc_project.State.Host"),
             [this](sdbusplus::message::message& msg) {
                 std::string objectName;
                 std::map<std::string, std::variant<std::string>> props;
@@ -186,10 +186,9 @@ class Watchdog : public WatchdogInherits
     static std::string getHostStatePath(std::string_view watchdogObjPath)
     {
         const auto lastSlash = watchdogObjPath.find_last_of('/');
-        std::string_view token =
-            (lastSlash == std::string_view::npos)
-                ? watchdogObjPath
-                : watchdogObjPath.substr(lastSlash + 1);
+        std::string_view token = (lastSlash == std::string_view::npos)
+                                     ? watchdogObjPath
+                                     : watchdogObjPath.substr(lastSlash + 1);
 
         if (token == "host")
         {
@@ -219,8 +218,15 @@ class Watchdog : public WatchdogInherits
     /** @brief Contained timer object */
     sdeventplus::utility::Timer<sdeventplus::ClockId::Monotonic> timer;
 
+    /** @brief Pre-timeout timer object */
+    sdeventplus::utility::Timer<sdeventplus::ClockId::Monotonic>
+        preTimeoutTimer;
+
     /** @brief Optional Callback handler on timer expirartion */
     void timeOutHandler();
+
+    /** @brief Callback handler for pre-timeout interrupt */
+    void preTimeoutHandler();
 
     /** @brief Attempt to enter the fallback watchdog or disables it */
     void tryFallbackOrDisable();
