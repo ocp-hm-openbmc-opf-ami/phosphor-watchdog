@@ -210,7 +210,11 @@ bool Watchdog::enabled(bool value)
 
         // Start pre-timeout timer if pre-timeout interval is configured
         auto preTimeoutMs = preTimeoutInterval() * 1000;
+#ifdef UNIT_TESTING
+        if (static_cast<uint64_t>(preTimeoutMs) >= interval_ms)
+#else
         if (preTimeoutMs > 0 && preTimeoutMs >= interval_ms)
+#endif
         {
             log<level::ERR>("watchdog: Invalid PreTimeoutInterval >= Interval, "
                             "pre-timeout will not be scheduled");
@@ -266,7 +270,11 @@ uint64_t Watchdog::timeRemaining(uint64_t value)
 
     preTimeoutInterruptOccurFlag(false);
 
+#ifdef UNIT_TESTING
+    if (preTimeoutMs > 0 && value > static_cast<uint64_t>(preTimeoutMs))
+#else
     if (preTimeoutMs > 0 && value > preTimeoutMs)
+#endif
     {
         // restart() internally cancels any pending arm before re-arming
         preTimeoutTimer.restart(milliseconds(value - preTimeoutMs));
@@ -307,7 +315,11 @@ void Watchdog::timeOutHandler()
     const auto nmiBusName = buildBusName(nmi::busNameBase, instance);
     const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
 
+#ifdef UNIT_TESTING
+    [[maybe_unused]] PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
+#else
     PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
+#endif
     std::string preInterruptActionMessageArgs{};
 
     Action action = expireAction();

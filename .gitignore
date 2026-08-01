@@ -7,3 +7,4 @@
 !/subprojects/sdbusplus.wrap
 !/subprojects/sdeventplus.wrap
 !/subprojects/stdplus.wrap
+!/subprojects/libpdkhook.wrap

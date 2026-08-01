@@ -15,7 +15,11 @@ watchdog_deps = [
   dependency('stdplus'),
 ]
 
-pdkhook_deps = [ declare_dependency (link_args: '-lpdkhook'),]
+if get_option('tests').enabled()
+  pdkhook_deps = [dependency('libpdkhook', fallback: ['libpdkhook', 'libpdkhook_dep'])]
+else
+  pdkhook_deps = [declare_dependency(link_args: '-lpdkhook')]
+endif
 
 watchdog_lib = static_library(
   'watchdog',
