@@ -316,7 +316,8 @@ void Watchdog::timeOutHandler()
     const auto nmiPath = buildPath(nmi::pathPrefix, instance, nmi::pathSuffix);
 
 #ifdef UNIT_TESTING
-    [[maybe_unused]] PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
+    [[maybe_unused]] PreTimeoutInterruptAction preTimeoutInterruptAction =
+        preTimeoutInterrupt();
 #else
     PreTimeoutInterruptAction preTimeoutInterruptAction = preTimeoutInterrupt();
 #endif
