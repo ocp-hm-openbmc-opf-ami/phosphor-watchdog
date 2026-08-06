@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://git.ami.com/core/ami-bmc/one-tree/core/phosphor-logging.git
-revision = OT-19932_UT_Coverage
+revision = HEAD
 
 [provide]
 phosphor-logging = phosphor_logging_dep
