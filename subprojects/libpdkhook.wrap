@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://git.ami.com/core/ami-bmc/one-tree/core/libpdkhook.git
+revision = HEAD
+
+
+[provide]
+libpdkhook = libpdkhook_dep

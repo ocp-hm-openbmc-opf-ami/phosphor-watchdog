@@ -10,6 +10,15 @@ project(
 
 cpp = meson.get_compiler('cpp')
 
+if get_option('tests').enabled()
+    add_project_arguments('-DUNIT_TESTING', language: 'cpp')
+    sdbusplus = subproject('sdbusplus').get_variable('sdbusplus_dep')
+    meson.override_dependency('sdbusplus', sdbusplus)
+    phosphor_dbus_interfaces_dep = subproject('phosphor-dbus-interfaces').get_variable('phosphor_dbus_interfaces_dep')
+    phosphor_logging_dep = subproject('phosphor-logging').get_variable('phosphor_logging_dep')
+    meson.override_dependency('phosphor-logging', phosphor_logging_dep)
+endif
+
 subdir('src')
 
 if get_option('tests').allowed()
