@@ -1,5 +1,5 @@
 [wrap-git]
-url = https://github.com/openbmc/phosphor-dbus-interfaces.git
+url = https://git.ami.com/core/ami-bmc/one-tree/core/phosphor-dbus-interfaces.git
 revision = HEAD
 
 [provide]
